@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
-
+const authRouter = require("./routes/auth.routes");
 const app = express();
 
 const allowedOrigins = [
@@ -23,12 +23,16 @@ app.use(express.urlencoded({limit:"16kb"}));//helps to read url if the form is s
 app.use(cookieParser());//helps read the cookies coming from the browser and postmen in req.cookies
 
 //server health check api
+
+app.use("/api/auth",authRouter);
+
 app.get("/api/health",(req,res)=>{
     return res.status(200).json({
         success:true,
         message:"Test complete the cors and express are working fine"
     })
 });
+
 
 //catch all 404 runs when no api call matches the req api call
 app.use((req,res)=>{

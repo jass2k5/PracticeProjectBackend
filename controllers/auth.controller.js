@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/user.model");
-const ImageKit = require("../config/imagekit");
+const Imagekit = require("../config/imagekit");
+const sendEmail = require("../utils/sendEmail");
 
 const cookieOptions = {
     httpOnly: true,
@@ -59,6 +60,7 @@ const refreshAccessToken = async (req, res) => {
 }
 
 const registerUser = async(req,res) =>{
+    let stage = "validating request";
     try{
         const{username,email,password} = req.body;
 
@@ -69,6 +71,7 @@ const registerUser = async(req,res) =>{
             });
         }
 
+        stage = "checking for an existing account";
         const existingUser = await User.findOne({
             $or: [{username:username.toLowerCase()},{email:email.toLowerCase()}]
         });
@@ -86,7 +89,8 @@ const registerUser = async(req,res) =>{
         };
 
         if(req.file){//the multer save it in the ram with 0 1 binary called buffer and send it to req.file
-            const uploadResponse = await ImageKit.upload({
+            stage = "uploading the avatar to ImageKit";
+            const uploadResponse = await Imagekit.upload({
                 file:req.file.buffer,
                 fileName: `avatar_${Date.now()}_${req.file.originalname}`,
                 folder: "/avatars"
@@ -98,6 +102,7 @@ const registerUser = async(req,res) =>{
         const otpExpiryTime = new Date(Date.now() + 10 * 60 * 1000); //current time  + 10
         
 
+        stage = "creating the user account";
         const user = await User.create({
             username: username.toLowerCase(),
             email: email.toLowerCase(),
@@ -108,12 +113,14 @@ const registerUser = async(req,res) =>{
             otpExpiry: otpExpiryTime
         });
 
+        stage = "sending the verification email";
         await sendEmail({
             email:user.email,
             subject:"Verify Your Accound - OTP",
             message:`Welcome ${user.username}! Your verification OTP is: ${generateOtp}`
         });
 
+        stage = "loading the created user";
         const createdUser = await User.findById(user._id).select("-password -refreshToken -otp -otpExpiry");
 
         return res.status(201).json({
@@ -125,10 +132,10 @@ const registerUser = async(req,res) =>{
         });
 
     }catch(error){
-        console.error("Regsiter Error:", error);
+        console.error(`Registration failed while ${stage}:`, error);
         return res.status(500).json({
             success:false,
-            message:"Internal server error during registration please try again"
+            message:`Registration failed while ${stage}. Check the server terminal for details.`
         });
     }
 }
@@ -192,4 +199,92 @@ const verifyEmail = async (req, res) => {
             message: "Internal server error during email verification"
         });
     }
+};
+
+const loginUser = async (req, res) => {
+    try {
+        const { email, username, password } = req.body;
+
+        if ((!username && !email) || !password) {
+            return res.status(400).json({
+                success: false,
+                message: "Username/Email and password are required"
+            });
+        }
+
+        const user = await User.findOne({
+            $or: [{ username: username?.toLowerCase() }, { email: email?.toLowerCase() }]
+        }).select("+password");
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "Invalid credentials: User does not exist"
+            });
+        }
+
+        const isPasswordValid = await user.isPasswordCorrect(password);
+        if (!isPasswordValid) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid credentials: Incorrect password"
+            });
+        }
+
+        // SMART GATE: If user didn't verify OTP earlier, send a fresh OTP & signal Frontend
+        if (!user.isVerified) {
+            const freshOtp = generateOTP();
+            user.otp = freshOtp;
+            user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
+            await user.save({ validateBeforeSave: false });
+
+            await sendEmail({
+                email: user.email,
+                subject: "Complete Your Verification - Login OTP",
+                message: `Your account is unverified. Your new OTP is ${freshOtp}. Valid for 10 minutes.`,
+                html: `<h2>Verify Your Account</h2><p>You tried to log in, but your email isn't verified yet.</p><p>Your fresh OTP is: <strong style="font-size: 20px;">${freshOtp}</strong></p>`
+            });
+
+            return res.status(403).json({
+                success: false,
+                redirectToOtp: true, // React reads this and opens OTP screen
+                email: user.email,
+                message: "Account not verified! We have sent a fresh OTP to your email."
+            });
+        }
+
+        // Issue fresh Access & Refresh Tokens
+        const accessToken = user.generateAccessToken();
+        const refreshToken = user.generateRefreshToken();
+
+        user.refreshToken = refreshToken;
+        await user.save({ validateBeforeSave: false });
+
+        const loggedInUser = await User.findById(user._id).select("-password -refreshToken -otp -otpExpiry");
+
+        return res
+            .status(200)
+            .cookie("accessToken", accessToken, { ...cookieOptions, maxAge: 15 * 60 * 1000 }) // 15 mins
+            .cookie("refreshToken", refreshToken, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 }) // 7 days
+            .json({
+                success: true,
+                message: "Logged in successfully",
+                data: loggedInUser
+            });
+
+    } catch (error) {
+        console.error("Login Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error during login"
+        });
+    }
+};
+module.exports = {
+    registerUser,
+    verifyEmail,
+    loginUser,
+    // logoutUser,
+    refreshAccessToken,
+    // getCurrentUser
 };
