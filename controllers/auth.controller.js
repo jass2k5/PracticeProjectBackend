@@ -280,11 +280,45 @@ const loginUser = async (req, res) => {
         });
     }
 };
+const logoutUser = async (req, res) => {
+    try{
+        await User.findByIdAndUpdate(
+            req.user._id,
+            {$unset:{refreshToken:true}},
+            {new:true}
+        );
+        return res.status(200).clearCookie("accessToken",cookieOptions).clearCookie("refreshToken",cookieOptions).json({
+            success:true,
+            message:"Logged out successfully"
+        });
+    }catch(error){
+        return res.status(500).json({
+            success:false,
+            message:"Internal server error during logout"
+        })
+    }
+};
+
+const getCurrentUser = (req,res) =>{
+    try{
+        return res.status(200).json({
+            success:true,
+            message:"Current user fetched successfully",
+            data:req.user
+        });
+    }catch(error){
+        return res.status(500).json({
+            success:false,
+            message:"Error fetching current user",
+        });
+    }
+}
+
 module.exports = {
     registerUser,
     verifyEmail,
     loginUser,
-    // logoutUser,
+    logoutUser,
     refreshAccessToken,
-    // getCurrentUser
+    getCurrentUser
 };
